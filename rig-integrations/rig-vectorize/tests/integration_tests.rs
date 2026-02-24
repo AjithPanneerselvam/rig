@@ -19,7 +19,7 @@ use rig::embeddings::{EmbedError, Embedding, EmbeddingModel, TextEmbedder};
 use rig::vector_store::request::{SearchFilter, VectorSearchRequest};
 use rig::vector_store::{InsertDocuments, VectorStoreIndex};
 use rig::{Embed, OneOrMany};
-use rig_vectorize::{VectorizeClient, VectorizeFilter, VectorizeVectorStore};
+use rig_vectorize::{VectorizeClient, VectorizeError, VectorizeFilter, VectorizeVectorStore};
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
@@ -570,26 +570,77 @@ async fn clear_test_index() {
         return;
     };
 
-    let client = VectorizeClient::new(account_id, index_name, api_token);
+    let client = VectorizeClient::new(&account_id, &index_name, &api_token);
+
+    eprintln!(
+        "[clear_test_index] Starting cleanup for index: {}",
+        index_name
+    );
 
     let mut cursor: Option<String> = None;
+    let mut total_deleted = 0;
     loop {
         let result = match client.list_vectors(Some(1000), cursor.as_deref()).await {
-            Ok(r) => r,
+            Ok(r) => {
+                eprintln!(
+                    "[clear_test_index] list_vectors: count={}, total_count={}, is_truncated={}",
+                    r.count, r.total_count, r.is_truncated
+                );
+                r
+            }
             Err(e) => {
-                eprintln!("Warning: Failed to list vectors: {:?}", e);
+                eprintln!("[clear_test_index] ERROR list_vectors failed: {:?}", e);
                 return;
             }
         };
 
         if result.vectors.is_empty() {
+            eprintln!("[clear_test_index] No vectors to delete");
             break;
         }
 
         let ids: Vec<String> = result.vectors.into_iter().map(|v| v.id).collect();
-        if let Err(e) = client.delete_by_ids(ids).await {
-            eprintln!("Warning: Failed to delete vectors: {:?}", e);
-            return;
+        let ids_count = ids.len();
+        let ids_for_log = ids.clone();
+
+        eprintln!(
+            "[clear_test_index] Deleting {} vectors: {:?}",
+            ids_count,
+            &ids_for_log[..ids_count.min(5)]
+        );
+
+        match client.delete_by_ids(ids).await {
+            Ok(delete_result) => {
+                total_deleted += ids_count;
+                eprintln!(
+                    "[clear_test_index] delete_by_ids SUCCESS: http_status={}, mutation_id={}, deleted {} vectors",
+                    delete_result.http_status, delete_result.mutation_id, ids_count
+                );
+            }
+            Err(e) => {
+                match &e {
+                    VectorizeError::HttpError(http_err) => {
+                        let status = http_err.status().map(|s| s.as_u16());
+                        eprintln!(
+                            "[clear_test_index] ERROR delete_by_ids failed. IDs: {:?}, HTTP status: {:?}, Error: {:?}",
+                            ids_for_log, status, http_err
+                        );
+                    }
+                    VectorizeError::ApiError { code, message } => {
+                        eprintln!(
+                            "[clear_test_index] ERROR delete_by_ids failed. IDs: {:?}, API error code: {}, Message: {}",
+                            ids_for_log, code, message
+                        );
+                    }
+                    _ => {
+                        eprintln!(
+                            "[clear_test_index] ERROR delete_by_ids failed. IDs: {:?}, Error: {:?}",
+                            ids_for_log, e
+                        );
+                    }
+                }
+                return;
+            }
         }
 
         if !result.is_truncated {
@@ -597,5 +648,29 @@ async fn clear_test_index() {
         }
 
         cursor = result.next_cursor;
+    }
+
+    // Verify deletion by listing vectors again
+    eprintln!("[clear_test_index] Verifying deletion...");
+    match client.list_vectors(Some(100), None).await {
+        Ok(verify_result) => {
+            if verify_result.count == 0 {
+                eprintln!(
+                    "[clear_test_index] VERIFIED: Index is empty. Total deleted: {}",
+                    total_deleted
+                );
+            } else {
+                eprintln!(
+                    "[clear_test_index] WARNING: Index still has {} vectors after deletion (eventual consistency). Total deleted: {}",
+                    verify_result.count, total_deleted
+                );
+            }
+        }
+        Err(e) => {
+            eprintln!(
+                "[clear_test_index] ERROR verification list_vectors failed: {:?}",
+                e
+            );
+        }
     }
 }

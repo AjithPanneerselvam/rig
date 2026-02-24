@@ -156,10 +156,13 @@ pub struct DeleteByIdsRequest {
 /// Result payload from a delete_by_ids request.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
-#[allow(dead_code)]
 pub struct DeleteResult {
     /// Mutation identifier for tracking async processing.
     pub mutation_id: String,
+
+    /// HTTP status code of the response (set by client, not from JSON).
+    #[serde(skip)]
+    pub http_status: u16,
 }
 
 /// Result payload from a list_vectors request.

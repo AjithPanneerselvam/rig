@@ -163,6 +163,7 @@ impl VectorizeClient {
             .send()
             .await?;
 
+        let http_status = response.status().as_u16();
         let response_text = response.text().await?;
         tracing::debug!("Raw Vectorize delete response: {}", response_text);
 
@@ -183,10 +184,15 @@ impl VectorizeClient {
             return Err(error);
         }
 
-        api_response.result.ok_or_else(|| VectorizeError::ApiError {
-            code: 0,
-            message: "No result in successful delete response".to_string(),
-        })
+        let mut result = api_response
+            .result
+            .ok_or_else(|| VectorizeError::ApiError {
+                code: 0,
+                message: "No result in successful delete response".to_string(),
+            })?;
+
+        result.http_status = http_status;
+        Ok(result)
     }
 
     /// Lists vector IDs in the index (paginated).
